@@ -160,9 +160,16 @@ type candidate struct {
 
 // buildCandidates returns the list of candidate paths to check for an integration file.
 func buildCandidates(f integration, agent, projectDir, homeDir string) []candidate {
+	homePath := filepath.Join(homeDir, f.dest)
+	if f.globalDest != "" {
+		if resolved, err := resolveGlobalDest(f.globalDestKind, f.globalDest, homeDir); err == nil {
+			homePath = resolved
+		}
+	}
+
 	candidates := []candidate{
 		{filepath.Join(projectDir, f.dest), locationProject},
-		{filepath.Join(homeDir, f.dest), locationHome},
+		{homePath, locationHome},
 	}
 
 	toolDir := toolDirFromDest(f.dest)

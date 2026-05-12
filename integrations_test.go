@@ -341,6 +341,70 @@ func TestDetectInstalledIntegrations_DedupsPerAgent(t *testing.T) {
 	}
 }
 
+func TestDetectInstalledIntegrations_CodexPluginRequiresPluginFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	for _, f := range integrationMap["codex"] {
+		sourceContent, err := integrationsFS.ReadFile(f.source)
+		if err != nil {
+			t.Fatalf("reading embedded source: %v", err)
+		}
+		dest := filepath.Join(projectDir, f.dest)
+		os.MkdirAll(filepath.Dir(dest), 0o755)
+		os.WriteFile(dest, sourceContent, 0o644)
+	}
+
+	result := detectInstalledIntegrations(projectDir, homeDir)
+	foundCodex := false
+	for _, r := range result {
+		switch r.Agent {
+		case "codex":
+			foundCodex = true
+		case "codex-plugin":
+			t.Fatalf("plain Codex skill install should not detect codex-plugin: %+v", result)
+		}
+	}
+	if !foundCodex {
+		t.Fatalf("expected Codex integration to be detected, got %+v", result)
+	}
+}
+
+func TestDetectInstalledIntegrations_CodexPluginGlobalUsesGlobalDest(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	f := integrationMap["codex-plugin"][0]
+	sourceContent, err := integrationsFS.ReadFile(f.source)
+	if err != nil {
+		t.Fatalf("reading embedded source: %v", err)
+	}
+	dest, err := resolveGlobalDest(f.globalDestKind, f.globalDest, homeDir)
+	if err != nil {
+		t.Fatalf("resolving global destination: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(dest), 0o755)
+	os.WriteFile(dest, sourceContent, 0o644)
+
+	result := detectInstalledIntegrations(projectDir, homeDir)
+	for _, r := range result {
+		if r.Agent != "codex-plugin" {
+			continue
+		}
+		if r.Status != "current" || r.Location != locationHome {
+			t.Fatalf("expected current global codex-plugin, got %+v", r)
+		}
+		return
+	}
+	t.Fatalf("expected codex-plugin to be detected, got %+v", result)
+}
+
 func TestRunCheck_NoStale(t *testing.T) {
 	// runCheck uses os.Getwd() and os.UserHomeDir(), so we just verify it doesn't panic
 	// when called in a temp dir with no installed integrations

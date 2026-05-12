@@ -25,7 +25,7 @@ var commandDispatch = map[string]func([]string){
 	"comment":   runComment,
 	"review":    runReview,
 	"plan":      runPlan,
-	"plan-hook": func([]string) { runPlanHook() },
+	"plan-hook": runPlanHookCommand,
 	"auth":      runAuth,
 	"stop":      runStop,
 	"status":    runStatus,
@@ -55,6 +55,7 @@ Usage:
   crit push [--dry-run] [--event <type>] [-m <msg>] [-o <dir>] [pr-number]  Post review comments to a GitHub PR
   crit plan --name <slug> <file>             Review a plan file (manages versioned copies)
   crit plan --name <slug>                    Read plan from stdin
+  crit plan-hook [--mode claude|codex]       Internal hook used by agent plan flows
   crit auth login                            Log in to crit-web via browser
   crit auth logout                           Log out and revoke token
   crit auth whoami                           Show current user info
@@ -66,7 +67,7 @@ Usage:
   crit help                                  Show this help message
 
   Agents:
-    claude-code, cursor, opencode, windsurf, github-copilot, cline, all
+    aider, claude-code, cline, codex, codex-plugin, cursor, gemini, github-copilot, hermes, opencode, pi, qwen, windsurf, all
 
 Options:
   -p, --port <port>           Port to listen on (default: random)
@@ -98,6 +99,37 @@ Configuration:
 
 Learn more: https://crit.md
 `)
+}
+
+func runPlanHookCommand(args []string) {
+	mode := "claude"
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--mode":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --mode requires a value")
+				os.Exit(1)
+			}
+			i++
+			mode = args[i]
+		case strings.HasPrefix(arg, "--mode="):
+			mode = strings.TrimPrefix(arg, "--mode=")
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown plan-hook flag: %s\n", arg)
+			os.Exit(1)
+		}
+	}
+
+	switch mode {
+	case "claude", "":
+		runPlanHook()
+	case "codex":
+		runCodexPlanHook()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown plan-hook mode: %s\n", mode)
+		os.Exit(1)
+	}
 }
 
 func printConfigHelp() {

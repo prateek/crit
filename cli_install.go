@@ -132,6 +132,12 @@ var integrationMap = map[string][]integration{
 		{source: "integrations/codex/skills/crit/SKILL.md", dest: ".agents/skills/crit/SKILL.md", hint: "Use $crit in Codex to start a review loop"},
 		{source: "integrations/codex/skills/crit-cli/SKILL.md", dest: ".agents/skills/crit-cli/SKILL.md", hint: "The crit-cli skill is available to Codex agents when needed"},
 	},
+	"codex-plugin": {
+		{source: "integrations/codex/plugin/crit/.codex-plugin/plugin.json", dest: "plugins/crit/.codex-plugin/plugin.json", globalDest: ".codex/plugins/crit/.codex-plugin/plugin.json", globalDestKind: globalDestRelHome, hint: "The Crit plugin is registered in the local Codex plugin marketplace"},
+		{source: "integrations/codex/plugin/crit/skills/crit/SKILL.md", dest: "plugins/crit/skills/crit/SKILL.md", globalDest: ".codex/plugins/crit/skills/crit/SKILL.md", globalDestKind: globalDestRelHome, hint: "The plugin-packaged crit skill is available to Codex as $crit:crit"},
+		{source: "integrations/codex/plugin/crit/skills/crit-cli/SKILL.md", dest: "plugins/crit/skills/crit-cli/SKILL.md", globalDest: ".codex/plugins/crit/skills/crit-cli/SKILL.md", globalDestKind: globalDestRelHome, hint: "The plugin-packaged crit-cli skill is available to Codex agents when needed"},
+		{source: "integrations/codex/plugin/crit/hooks/hooks.json", dest: "plugins/crit/hooks/hooks.json", globalDest: ".codex/plugins/crit/hooks/hooks.json", globalDestKind: globalDestRelHome, hint: "The Crit plugin includes a Codex Stop hook for proposed-plan review"},
+	},
 	"qwen": {
 		// Qwen Code auto-discovers .qwen/skills/ project-locally and ~/.qwen/skills/ globally —
 		// same shape both modes, so no globalDest redirect is needed.
@@ -271,6 +277,15 @@ func installIntegration(name string, force bool) error {
 	}
 
 	var hints []string
+	if name == "codex-plugin" {
+		for _, f := range integrationMap["codex"] {
+			dest := destFor(f, global, home, "codex")
+			installOneFile(f, dest, force)
+			if f.hint != "" {
+				hints = append(hints, f.hint)
+			}
+		}
+	}
 	for _, f := range files {
 		dest := destFor(f, global, home, name)
 		installOneFile(f, dest, force)
@@ -289,6 +304,9 @@ func installIntegration(name string, force bool) error {
 		if err := installOpencodePluginEntry(opencodeConfigPath(global, home), opencodePluginEntry(global), force); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not register plugin in opencode config: %v\n", err)
 		}
+	}
+	if name == "codex-plugin" {
+		installCodexPluginMarketplace(codexPluginMarketplacePath(global, home), codexPluginMarketplaceSourcePath(global), force)
 	}
 	if name == "hermes" && !global {
 		fmt.Println()
@@ -336,6 +354,111 @@ func installOneFile(f integration, dest string, force bool) {
 		os.Exit(1)
 	}
 	fmt.Printf("  Installed: %s\n", dest)
+}
+
+func codexPluginMarketplacePath(global bool, home string) string {
+	if global {
+		return filepath.Join(home, ".agents", "plugins", "marketplace.json")
+	}
+	return filepath.Join(".agents", "plugins", "marketplace.json")
+}
+
+func codexPluginMarketplaceSourcePath(global bool) string {
+	if global {
+		return "./.codex/plugins/crit"
+	}
+	return "./plugins/crit"
+}
+
+func installCodexPluginMarketplace(path, sourcePath string, force bool) {
+	existing := map[string]interface{}{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &existing); err != nil {
+			if !force {
+				fmt.Fprintf(os.Stderr, "Error: %s contains invalid JSON — use --force to overwrite\n", path)
+				os.Exit(1)
+			}
+			existing = map[string]interface{}{}
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", path, err)
+		os.Exit(1)
+	}
+
+	if name, _ := existing["name"].(string); strings.TrimSpace(name) == "" {
+		existing["name"] = "local"
+	}
+	iface, _ := existing["interface"].(map[string]interface{})
+	if iface == nil {
+		iface = map[string]interface{}{}
+	}
+	if displayName, _ := iface["displayName"].(string); strings.TrimSpace(displayName) == "" {
+		iface["displayName"] = "Local Plugins"
+	}
+	existing["interface"] = iface
+
+	var plugins []interface{}
+	if raw, ok := existing["plugins"]; ok {
+		var valid bool
+		plugins, valid = raw.([]interface{})
+		if !valid {
+			if !force {
+				fmt.Fprintf(os.Stderr, "Error: %s field \"plugins\" must be an array — use --force to overwrite\n", path)
+				os.Exit(1)
+			}
+			plugins = nil
+		}
+	}
+
+	entry := map[string]interface{}{
+		"name": "crit",
+		"source": map[string]interface{}{
+			"source": "local",
+			"path":   sourcePath,
+		},
+		"policy": map[string]interface{}{
+			"installation":   "INSTALLED_BY_DEFAULT",
+			"authentication": "ON_INSTALL",
+		},
+		"category": "Developer Tools",
+	}
+
+	for i, raw := range plugins {
+		plugin, ok := raw.(map[string]interface{})
+		if !ok || plugin["name"] != "crit" {
+			continue
+		}
+		if !force && codexMarketplaceSourceMatches(plugin, sourcePath) {
+			fmt.Printf("  Skipped:   %s (Crit plugin already registered, use --force to overwrite)\n", path)
+			return
+		}
+		plugins[i] = entry
+		existing["plugins"] = plugins
+		writeCodexPluginMarketplace(path, existing)
+		return
+	}
+
+	plugins = append(plugins, entry)
+	existing["plugins"] = plugins
+	writeCodexPluginMarketplace(path, existing)
+}
+
+func codexMarketplaceSourceMatches(plugin map[string]interface{}, sourcePath string) bool {
+	source, _ := plugin["source"].(map[string]interface{})
+	return source["source"] == "local" && source["path"] == sourcePath
+}
+
+func writeCodexPluginMarketplace(path string, marketplace map[string]interface{}) {
+	data, err := json.MarshalIndent(marketplace, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	if err := atomicWriteFile(path, append(data, '\n'), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	fmt.Printf("  Installed: %s\n", path)
 }
 
 // installGeminiSettings merges the crit plan-hook into .gemini/settings.json,

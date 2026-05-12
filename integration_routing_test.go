@@ -111,6 +111,7 @@ func TestIntegrationMap_SnapshotGlobalRouting(t *testing.T) {
 		"windsurf":       {{"", globalDestNone}},
 		"cline":          {{"Cline/Rules/crit.md", globalDestDocuments}},
 		"gemini":         {{".gemini/skills/crit-cli/SKILL.md", globalDestRelHome}, {".gemini/commands/crit.toml", globalDestRelHome}, {".gemini/policies/crit.toml", globalDestRelHome}},
+		"codex-plugin":   {{".codex/plugins/crit/.codex-plugin/plugin.json", globalDestRelHome}, {".codex/plugins/crit/skills/crit/SKILL.md", globalDestRelHome}, {".codex/plugins/crit/skills/crit-cli/SKILL.md", globalDestRelHome}, {".codex/plugins/crit/hooks/hooks.json", globalDestRelHome}},
 		"hermes":         {{".hermes/skills/crit/SKILL.md", globalDestRelHome}, {".hermes/skills/crit-cli/SKILL.md", globalDestRelHome}},
 		"pi":             {{".pi/agent/skills/crit/SKILL.md", globalDestRelHome}, {".pi/agent/skills/crit-cli/SKILL.md", globalDestRelHome}},
 	}
@@ -185,6 +186,189 @@ func TestInstallIntegration_GeminiWritesSettingsJSON(t *testing.T) {
 		}
 	}
 	t.Error("exit_plan_mode hook not found in .gemini/settings.json")
+}
+
+func TestInstallIntegration_CodexPluginEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("installIntegration: %v", err)
+	}
+
+	for _, path := range []string{
+		".agents/skills/crit/SKILL.md",
+		".agents/skills/crit-cli/SKILL.md",
+		"plugins/crit/.codex-plugin/plugin.json",
+		"plugins/crit/skills/crit/SKILL.md",
+		"plugins/crit/skills/crit-cli/SKILL.md",
+		"plugins/crit/hooks/hooks.json",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
+			t.Fatalf("expected %s to be written: %v", path, err)
+		}
+	}
+
+	hookPath := filepath.Join(dir, "plugins/crit/hooks/hooks.json")
+	hookData, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hookData), "crit plan-hook --mode codex") {
+		t.Fatalf("plugin hook should invoke crit plan-hook --mode codex:\n%s", hookData)
+	}
+
+	marketplacePath := filepath.Join(dir, ".agents/plugins/marketplace.json")
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry after first install, got %d", got)
+	}
+	assertCritMarketplacePathExists(t, marketplacePath, dir)
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("second installIntegration: %v", err)
+	}
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected idempotent marketplace registration, got %d entries", got)
+	}
+}
+
+func TestInstallIntegration_CodexPluginGlobalEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	t.Chdir(home)
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("installIntegration: %v", err)
+	}
+
+	for _, path := range []string{
+		".agents/skills/crit/SKILL.md",
+		".agents/skills/crit-cli/SKILL.md",
+		".codex/plugins/crit/.codex-plugin/plugin.json",
+		".codex/plugins/crit/skills/crit/SKILL.md",
+		".codex/plugins/crit/skills/crit-cli/SKILL.md",
+		".codex/plugins/crit/hooks/hooks.json",
+	} {
+		if _, err := os.Stat(filepath.Join(home, path)); err != nil {
+			t.Fatalf("expected %s to be written: %v", path, err)
+		}
+	}
+
+	marketplacePath := filepath.Join(home, ".agents/plugins/marketplace.json")
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./.codex/plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry after global install, got %d", got)
+	}
+	assertCritMarketplacePathExists(t, marketplacePath, home)
+}
+
+func TestInstallCodexPluginMarketplaceForceOverwritesInvalidJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installCodexPluginMarketplace(path, "./plugins/crit", true)
+
+	if got := countCritMarketplaceEntries(t, path, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplaceForceOverwritesMalformedPlugins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte(`{"plugins":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installCodexPluginMarketplace(path, "./plugins/crit", true)
+
+	if got := countCritMarketplaceEntries(t, path, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplaceRepairsStaleSourcePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	stale := `{
+  "name": "local",
+  "plugins": [
+    {
+      "name": "crit",
+      "source": {"source": "local", "path": "./plugins/crit"},
+      "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installCodexPluginMarketplace(path, "./.codex/plugins/crit", false)
+
+	if got := countCritMarketplaceEntries(t, path, "./.codex/plugins/crit"); got != 1 {
+		t.Fatalf("expected stale Crit marketplace entry to be replaced, got %d", got)
+	}
+}
+
+func countCritMarketplaceEntries(t *testing.T, path, wantSourcePath string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected marketplace at %s: %v", path, err)
+	}
+	var marketplace map[string]interface{}
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatalf("marketplace is not valid JSON: %v", err)
+	}
+	plugins, _ := marketplace["plugins"].([]interface{})
+	count := 0
+	for _, raw := range plugins {
+		plugin, _ := raw.(map[string]interface{})
+		if plugin["name"] != "crit" {
+			continue
+		}
+		count++
+		source, _ := plugin["source"].(map[string]interface{})
+		if source["source"] != "local" || source["path"] != wantSourcePath {
+			t.Fatalf("unexpected Crit plugin source: %+v", source)
+		}
+		policy, _ := plugin["policy"].(map[string]interface{})
+		if policy["installation"] != "INSTALLED_BY_DEFAULT" {
+			t.Fatalf("unexpected Crit plugin policy: %+v", policy)
+		}
+	}
+	return count
+}
+
+func assertCritMarketplacePathExists(t *testing.T, marketplacePath, marketplaceRoot string) {
+	t.Helper()
+
+	data, err := os.ReadFile(marketplacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marketplace map[string]interface{}
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatal(err)
+	}
+	plugins, _ := marketplace["plugins"].([]interface{})
+	for _, raw := range plugins {
+		plugin, _ := raw.(map[string]interface{})
+		if plugin["name"] != "crit" {
+			continue
+		}
+		source, _ := plugin["source"].(map[string]interface{})
+		relPath, _ := source["path"].(string)
+		pluginRoot := filepath.Join(marketplaceRoot, relPath)
+		manifestPath := filepath.Join(pluginRoot, ".codex-plugin", "plugin.json")
+		if _, err := os.Stat(manifestPath); err != nil {
+			t.Fatalf("marketplace path %q should resolve to installed plugin manifest %s: %v", relPath, manifestPath, err)
+		}
+		return
+	}
+	t.Fatal("Crit marketplace entry not found")
 }
 
 // TestInstallIntegration_HermesPrintsExternalDirsNote verifies that on a

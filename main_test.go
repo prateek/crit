@@ -81,6 +81,141 @@ func TestHelperProcess_Config(t *testing.T) {
 	runConfig([]string{"--generate"})
 }
 
+func TestExtractProposedPlan(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{
+			name: "extracts multiline plan",
+			in:   "before\n<proposed_plan>\n- change auth\n</proposed_plan>\nafter",
+			want: "- change auth",
+			ok:   true,
+		},
+		{
+			name: "rejects empty plan",
+			in:   "<proposed_plan>\n</proposed_plan>",
+		},
+		{
+			name: "uses latest non-empty plan block",
+			in: strings.Join([]string{
+				"<proposed_plan></proposed_plan>",
+				"<proposed_plan>\n- first\n</proposed_plan>",
+				"<proposed_plan>\n- latest\n</proposed_plan>",
+			}, "\n"),
+			want: "- latest",
+			ok:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractProposedPlan(tt.in)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProposedPlanFromCodexEventFallsBackToTranscript(t *testing.T) {
+	transcript := writeCodexTranscript(t,
+		codexTurnContextLine("turn-1"),
+		codexAssistantMessageLine("<proposed_plan>\n- old plan\n</proposed_plan>"),
+		codexTurnContextLine("turn-2"),
+		codexAssistantMessageLine("visible text\n<proposed_plan>\n- new plan\n</proposed_plan>"),
+	)
+	visible := "visible text"
+	got, ok := proposedPlanFromCodexEvent(codexStopHookEvent{
+		LastAssistantMessage: &visible,
+		TranscriptPath:       &transcript,
+		TurnID:               "turn-2",
+	})
+	if !ok {
+		t.Fatal("expected proposed plan from transcript")
+	}
+	if got != "- new plan" {
+		t.Fatalf("got %q, want %q", got, "- new plan")
+	}
+}
+
+func TestProposedPlanFromCodexEventUsesTaggedPlanOutsidePlanMode(t *testing.T) {
+	visible := "<proposed_plan>\n- should run\n</proposed_plan>"
+	got, ok := proposedPlanFromCodexEvent(codexStopHookEvent{
+		PermissionMode:       "default",
+		LastAssistantMessage: &visible,
+	})
+	if !ok {
+		t.Fatal("expected tagged plan outside formal plan mode")
+	}
+	if got != "- should run" {
+		t.Fatalf("got %q, want %q", got, "- should run")
+	}
+}
+
+func TestProposedPlanFromCodexEventDoesNotReuseOldTranscriptPlan(t *testing.T) {
+	transcript := writeCodexTranscript(t,
+		codexTurnContextLine("turn-1"),
+		codexAssistantMessageLine("<proposed_plan>\n- old plan\n</proposed_plan>"),
+		codexTurnContextLine("turn-2"),
+		codexAssistantMessageLine("ordinary final answer"),
+	)
+	visible := "ordinary final answer"
+	if plan, ok := proposedPlanFromCodexEvent(codexStopHookEvent{
+		LastAssistantMessage: &visible,
+		TranscriptPath:       &transcript,
+		TurnID:               "turn-2",
+	}); ok {
+		t.Fatalf("did not expect old plan to be reused, got %q", plan)
+	}
+}
+
+func writeCodexTranscript(t *testing.T, lines ...map[string]interface{}) string {
+	t.Helper()
+
+	transcript := filepath.Join(t.TempDir(), "rollout.jsonl")
+	var b strings.Builder
+	for _, line := range lines {
+		data, err := json.Marshal(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(transcript, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return transcript
+}
+
+func codexTurnContextLine(turnID string) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "turn_context",
+		"payload": map[string]interface{}{
+			"turn_id": turnID,
+		},
+	}
+}
+
+func codexAssistantMessageLine(text string) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "response_item",
+		"payload": map[string]interface{}{
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]string{
+				{"type": "output_text", "text": text},
+			},
+		},
+	}
+}
+
 // TestRunComment_MissingArgs verifies that runComment exits with usage when given no args.
 func TestRunComment_MissingArgs(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess_CommentMissing", "--")
