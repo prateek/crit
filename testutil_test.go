@@ -99,6 +99,7 @@ func gitT(t *testing.T, dir string, args ...string) string {
 func setHome(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("HOME", dir)
+	t.Setenv("CODEX_HOME", "")
 	if runtime.GOOS == "windows" {
 		t.Setenv("USERPROFILE", dir)
 		// HOMEDRIVE/HOMEPATH together form a fallback used by os.UserHomeDir.

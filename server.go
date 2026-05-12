@@ -1882,6 +1882,7 @@ func (s *Server) buildPlanFeedback(reviewFile string) string {
 			"Comments are in %s — grouped per file with start_line/end_line referencing the source. "+
 			"Each comment has a scope field: \"line\" for inline comments, \"file\" for file-level, or \"review\" for review-level comments. "+
 			"Read the file, revise the plan to address each comment. "+
+			"If you are running under Codex, re-emit the revised plan inside <proposed_plan>...</proposed_plan> so Crit can review the new version. "+
 			"To reply to comments, use `crit comment --plan %s --reply-to <id> --author <your-name> \"<explanation>\"`.",
 		reviewFile, slug)
 }

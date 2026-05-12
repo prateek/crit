@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ import (
 //go:embed frontend/*.html frontend/*.css frontend/*.js frontend/*.png frontend/*.svg frontend/*.ico frontend/*.webmanifest
 var frontendFS embed.FS
 
-//go:embed integrations/*
+//go:embed all:integrations/*
 var integrationsFS embed.FS
 
 var (
@@ -1890,13 +1891,22 @@ type planHookEvent struct {
 	} `json:"tool_input"`
 }
 
-func resolveHookSlug(event planHookEvent, content []byte) string {
-	if event.SessionID != "" {
-		if existing, ok := lookupPlanSlug(event.SessionID); ok {
+type codexStopHookEvent struct {
+	SessionID            string  `json:"session_id"`
+	TurnID               string  `json:"turn_id"`
+	TranscriptPath       *string `json:"transcript_path"`
+	PermissionMode       string  `json:"permission_mode"`
+	StopHookActive       bool    `json:"stop_hook_active"`
+	LastAssistantMessage *string `json:"last_assistant_message"`
+}
+
+func resolveHookSlug(sessionID string, content []byte) string {
+	if sessionID != "" {
+		if existing, ok := lookupPlanSlug(sessionID); ok {
 			return existing
 		}
 		slug := resolveSlug(content)
-		if err := savePlanSlug(event.SessionID, slug); err != nil {
+		if err := savePlanSlug(sessionID, slug); err != nil {
 			fmt.Fprintf(os.Stderr, "crit plan-hook: warning: could not save slug mapping: %v\n", err)
 		}
 		return slug
@@ -1931,37 +1941,154 @@ func emitHookDecision(approved bool, prompt string) {
 	fmt.Println(string(out))
 }
 
-// runPlanHook is the PermissionRequest hook handler for ExitPlanMode.
-// It reads the hook event JSON from stdin, extracts the plan content,
-// opens a crit review session, and writes a hookSpecificOutput JSON
-// decision (allow/deny) to stdout.
-func runPlanHook() {
-	go backgroundCleanup()
+// Codex Stop hooks expose permission_mode, last_assistant_message, and
+// transcript_path, but not a structured tool_input.plan like Claude Code's
+// ExitPlanMode hook. Until Codex adds that payload, Crit uses its explicit
+// <proposed_plan> tag as the activation signal and accepts either a closed tag
+// or EOF, which matches how partial final streamed assistant messages can land
+// in the Stop hook payload/transcript.
+//
+// References:
+// - https://developers.openai.com/codex/hooks#stop
+// - https://raw.githubusercontent.com/openai/codex/main/codex-rs/hooks/schema/generated/stop.command.input.schema.json
+var proposedPlanBlockRE = regexp.MustCompile(`(?s)<proposed_plan>\s*(.*?)(?:\s*</proposed_plan>|$)`)
 
-	var event planHookEvent
-	if err := json.NewDecoder(os.Stdin).Decode(&event); err != nil {
-		fmt.Fprintf(os.Stderr, "crit plan-hook: could not parse stdin: %v\n", err)
+const (
+	codexTranscriptInitialTokenBuffer = 64 * 1024
+	codexTranscriptMaxTokenSize       = 64 * 1024 * 1024
+)
+
+func extractProposedPlan(message string) (string, bool) {
+	matches := proposedPlanBlockRE.FindAllStringSubmatch(message, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		if plan := strings.TrimSpace(matches[i][1]); plan != "" {
+			return plan, true
+		}
+	}
+	return "", false
+}
+
+func extractProposedPlanFromCodexTranscript(path, turnID string) (string, bool) {
+	if strings.TrimSpace(turnID) == "" {
+		return "", false
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crit plan-hook --mode codex: could not read transcript %s: %v\n", path, err)
+		return "", false
+	}
+	defer file.Close()
+
+	var latestAssistantMessage string
+	inTargetTurn := false
+	scanner := newCodexTranscriptScanner(file)
+	for scanner.Scan() {
+		var line struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			continue
+		}
+		if line.Type == "turn_context" {
+			var payload struct {
+				TurnID string `json:"turn_id"`
+			}
+			if err := json.Unmarshal(line.Payload, &payload); err == nil {
+				inTargetTurn = payload.TurnID == turnID
+			}
+			continue
+		}
+		if !inTargetTurn || line.Type != "response_item" {
+			continue
+		}
+
+		var payload struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(line.Payload, &payload); err != nil {
+			continue
+		}
+		if payload.Type != "message" || payload.Role != "assistant" {
+			continue
+		}
+		var combined strings.Builder
+		for _, item := range payload.Content {
+			if item.Type == "output_text" {
+				combined.WriteString(item.Text)
+			}
+		}
+		latestAssistantMessage = combined.String()
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "crit plan-hook --mode codex: could not scan transcript %s: %v\n", path, err)
+	}
+	return extractProposedPlan(latestAssistantMessage)
+}
+
+func newCodexTranscriptScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	// Scanner reuses this initial token buffer for the whole transcript scan.
+	// The max is higher because Codex JSONL response_item records can contain
+	// a large assistant message on one line.
+	initialTokenBuffer := make([]byte, codexTranscriptInitialTokenBuffer)
+	scanner.Buffer(initialTokenBuffer, codexTranscriptMaxTokenSize)
+	return scanner
+}
+
+func proposedPlanFromCodexEvent(event codexStopHookEvent) (string, bool) {
+	if event.LastAssistantMessage != nil {
+		if plan, ok := extractProposedPlan(*event.LastAssistantMessage); ok {
+			return plan, true
+		}
+	}
+	if event.TranscriptPath != nil && strings.TrimSpace(*event.TranscriptPath) != "" {
+		return extractProposedPlanFromCodexTranscript(*event.TranscriptPath, event.TurnID)
+	}
+	return "", false
+}
+
+func emitCodexStopDecision(approved bool, prompt string) {
+	if approved {
 		return
 	}
-	if strings.TrimSpace(event.ToolInput.Plan) == "" {
-		return
+	if prompt == "" {
+		prompt = "Review comments pending — address them before proceeding."
 	}
+	out, _ := json.Marshal(map[string]any{
+		"decision": "block",
+		"reason":   prompt,
+	})
+	fmt.Println(string(out))
+}
 
-	content := []byte(event.ToolInput.Plan)
-	slug := resolveHookSlug(event, content)
+var runCodexPlanReviewHook = func(sessionID string, content []byte) {
+	runPlanReviewHook("crit plan-hook --mode codex", sessionID, content, emitCodexStopDecision)
+}
+
+func runPlanReviewHook(logPrefix, sessionID string, content []byte, emitDecision func(bool, string)) {
+	slug := resolveHookSlug(sessionID, content)
 
 	storageDir, err := planStorageDir(slug)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "crit plan-hook: error resolving storage dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: error resolving storage dir: %v\n", logPrefix, err)
+		emitDecision(false, fmt.Sprintf("Crit could not prepare plan storage: %v", err))
 		return
 	}
 
 	ver, err := savePlanVersion(storageDir, content)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "crit plan-hook: error saving plan: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: error saving plan: %v\n", logPrefix, err)
+		emitDecision(false, fmt.Sprintf("Crit could not save the proposed plan: %v", err))
 		return
 	}
-	fmt.Fprintf(os.Stderr, "crit plan-hook: plan '%s' saved as v%03d\n", slug, ver)
+	fmt.Fprintf(os.Stderr, "%s: plan '%s' saved as v%03d\n", logPrefix, slug, ver)
 
 	cwd, _ := resolvedCWD()
 	key := planSessionKey(cwd, slug)
@@ -1979,7 +2106,8 @@ func runPlanHook() {
 	} else {
 		entry, err = startDaemon(key, daemonArgs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "crit plan-hook: error starting daemon: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: error starting daemon: %v\n", logPrefix, err)
+			emitDecision(false, fmt.Sprintf("Crit could not start the review UI: %v", err))
 			return
 		}
 		fmt.Fprintf(os.Stderr, "crit plan-hook: started daemon at %s (PID %d)\n", entry.baseURL(), entry.PID)
@@ -1993,7 +2121,47 @@ func runPlanHook() {
 	approved, prompt := runReviewClientRaw(entry, key)
 	killDaemonOnApproval(approved, entry.PID)
 	cleanupOnApproval(approved, entry.ReviewPath, LoadConfig(cwd).CleanupOnApproveEnabled())
-	emitHookDecision(approved, prompt)
+	emitDecision(approved, prompt)
+}
+
+// runPlanHook is the PermissionRequest hook handler for ExitPlanMode.
+// It reads the hook event JSON from stdin, extracts the plan content,
+// opens a crit review session, and writes a hookSpecificOutput JSON
+// decision (allow/deny) to stdout.
+func runPlanHook() {
+	go backgroundCleanup()
+
+	var event planHookEvent
+	if err := json.NewDecoder(os.Stdin).Decode(&event); err != nil {
+		fmt.Fprintf(os.Stderr, "crit plan-hook: could not parse stdin: %v\n", err)
+		emitHookDecision(false, "Crit could not parse the plan hook input; plan was not reviewed.")
+		return
+	}
+	if strings.TrimSpace(event.ToolInput.Plan) == "" {
+		return
+	}
+
+	runPlanReviewHook("crit plan-hook", event.SessionID, []byte(event.ToolInput.Plan), emitHookDecision)
+}
+
+// runCodexPlanHook is the Stop hook handler for Codex proposed-plan review.
+// Codex has no ExitPlanMode permission hook, so this recovers the raw
+// proposed-plan block from the Stop payload/transcript and blocks the stop
+// when Crit returns comments.
+func runCodexPlanHook() {
+	var event codexStopHookEvent
+	if err := json.NewDecoder(os.Stdin).Decode(&event); err != nil {
+		fmt.Fprintf(os.Stderr, "crit plan-hook --mode codex: could not parse stdin: %v\n", err)
+		emitCodexStopDecision(false, "Crit could not parse the Codex hook input; plan was not reviewed.")
+		return
+	}
+	plan, ok := proposedPlanFromCodexEvent(event)
+	if !ok {
+		return
+	}
+
+	go backgroundCleanup()
+	runCodexPlanReviewHook(event.SessionID, []byte(plan))
 }
 
 // waitForDaemonReady polls the daemon's /api/session endpoint until it stops

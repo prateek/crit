@@ -118,7 +118,7 @@ crit config [--generate]      # Print resolved config (or starter template)
 crit install <agent>          # Install integration config for an AI tool
 crit auth ...                 # Auth flow for hosted crit-web (login/logout)
 crit plan [...]               # Plan-file workflow
-crit plan-hook                # Internal hook used by plan flow
+crit plan-hook [--mode claude|codex]  # Internal hook used by agent plan flows
 crit check                    # Self-check (env, git, gh availability)
 crit _serve                   # Internal: foreground server (used by daemon spawn)
 crit --version | -v           # Version

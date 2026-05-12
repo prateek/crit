@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "crit plan-hook --mode codex",
+            "timeout": 345600,
+            "statusMessage": "Reviewing proposed plan with Crit"
+          }
+        ]
+      }
+    ]
+  }
+}

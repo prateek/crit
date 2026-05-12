@@ -1,0 +1,19 @@
+{
+  "name": "crit",
+  "description": "Review code changes, PRs, commit ranges, and plans with Crit inline comments.",
+  "keywords": ["code-review", "diff", "inline-comments", "plan-review"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Crit",
+    "shortDescription": "Inline code and plan review for Codex",
+    "longDescription": "Crit opens a local browser review UI for current code changes, explicit files, PRs, commit ranges, and proposed plans, then returns structured review comments to Codex.",
+    "developerName": "Crit",
+    "category": "Developer Tools",
+    "capabilities": ["Code Review", "Plan Review", "Hooks"],
+    "defaultPrompt": [
+      "Use $crit to review my current code changes.",
+      "Use $crit to review this PR."
+    ]
+  }
+}

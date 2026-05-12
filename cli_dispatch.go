@@ -27,7 +27,7 @@ var commandDispatch = map[string]func([]string){
 	"live":      runLive,
 	"preview":   runPreview,
 	"plan":      runPlan,
-	"plan-hook": func([]string) { runPlanHook() },
+	"plan-hook": runPlanHookCommand,
 	"auth":      runAuth,
 	"stop":      runStop,
 	"status":    runStatus,
@@ -105,6 +105,37 @@ Configuration:
 
 Learn more: https://crit.md
 `, strings.Join(availableIntegrations(), ", "))
+}
+
+func runPlanHookCommand(args []string) {
+	mode := "claude"
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--mode":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "Error: --mode requires a value")
+				os.Exit(1)
+			}
+			i++
+			mode = args[i]
+		case strings.HasPrefix(arg, "--mode="):
+			mode = strings.TrimPrefix(arg, "--mode=")
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown plan-hook flag: %s\n", arg)
+			os.Exit(1)
+		}
+	}
+
+	switch mode {
+	case "claude", "":
+		runPlanHook()
+	case "codex":
+		runCodexPlanHook()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown plan-hook mode: %s\n", mode)
+		os.Exit(1)
+	}
 }
 
 func printConfigHelp() {

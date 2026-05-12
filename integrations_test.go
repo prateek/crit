@@ -343,6 +343,262 @@ func TestDetectInstalledIntegrations_DedupsPerAgent(t *testing.T) {
 	}
 }
 
+func TestDetectInstalledIntegrations_CodexPluginRequiresPluginFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	for _, f := range integrationMap["codex"] {
+		sourceContent, err := integrationsFS.ReadFile(f.source)
+		if err != nil {
+			t.Fatalf("reading embedded source: %v", err)
+		}
+		dest := filepath.Join(projectDir, f.dest)
+		os.MkdirAll(filepath.Dir(dest), 0o755)
+		os.WriteFile(dest, sourceContent, 0o644)
+	}
+
+	result := detectInstalledIntegrations(projectDir, homeDir)
+	foundCodex := false
+	for _, r := range result {
+		switch r.Agent {
+		case "codex":
+			foundCodex = true
+		case "codex-plugin":
+			t.Fatalf("plain Codex skill install should not detect codex-plugin: %+v", result)
+		}
+	}
+	if !foundCodex {
+		t.Fatalf("expected Codex integration to be detected, got %+v", result)
+	}
+}
+
+func TestDetectInstalledIntegrations_CodexPluginGlobalUsesGlobalDest(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	f := integrationMap["codex-plugin"][0]
+	sourceContent, err := integrationsFS.ReadFile(f.source)
+	if err != nil {
+		t.Fatalf("reading embedded source: %v", err)
+	}
+	dest, err := resolveGlobalDest(f.globalDestKind, f.globalDest, homeDir)
+	if err != nil {
+		t.Fatalf("resolving global destination: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(dest), 0o755)
+	os.WriteFile(dest, sourceContent, 0o644)
+
+	result := detectInstalledIntegrations(projectDir, homeDir)
+	for _, r := range result {
+		if r.Agent != "codex-plugin" {
+			continue
+		}
+		if r.Status != "current" || r.Location != locationHome {
+			t.Fatalf("expected current global codex-plugin, got %+v", r)
+		}
+		return
+	}
+	t.Fatalf("expected codex-plugin to be detected, got %+v", result)
+}
+
+func TestCheckInstalledIntegrations_CodexPluginCacheStale(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	f := integrationMap["codex-plugin"][1]
+	relPath, ok := strings.CutPrefix(f.source, "integrations/codex/plugin/crit/")
+	if !ok {
+		t.Fatalf("unexpected codex-plugin source path %q", f.source)
+	}
+	cachePath := filepath.Join(homeDir, ".codex", "plugins", "cache", "local", "crit", "local", relPath)
+	os.MkdirAll(filepath.Dir(cachePath), 0o755)
+	os.WriteFile(cachePath, []byte("old cached skill"), 0o644)
+
+	stale := checkInstalledIntegrations(projectDir, homeDir)
+	for _, s := range stale {
+		if s.agent == "codex-plugin" && s.location == locationCache && s.dest == cachePath {
+			return
+		}
+	}
+	t.Fatalf("expected stale codex-plugin cache file %s, got %+v", cachePath, stale)
+}
+
+func TestCheckInstalledIntegrations_CodexPluginCacheUsesMarketplaceName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(filepath.Join(projectDir, ".agents", "plugins"), 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	marketplace := `{
+  "name": "personal",
+  "plugins": [
+    {"name": "crit", "source": {"source": "local", "path": "./plugins/crit"}}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(projectDir, ".agents", "plugins", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := integrationMap["codex-plugin"][2]
+	relPath, ok := strings.CutPrefix(f.source, "integrations/codex/plugin/crit/")
+	if !ok {
+		t.Fatalf("unexpected codex-plugin source path %q", f.source)
+	}
+	cachePath := filepath.Join(homeDir, ".codex", "plugins", "cache", "personal", "crit", "local", relPath)
+	os.MkdirAll(filepath.Dir(cachePath), 0o755)
+	os.WriteFile(cachePath, []byte("old cached skill"), 0o644)
+
+	stale := checkInstalledIntegrations(projectDir, homeDir)
+	for _, s := range stale {
+		if s.agent == "codex-plugin" && s.location == locationCache && s.dest == cachePath {
+			return
+		}
+	}
+	t.Fatalf("expected stale codex-plugin cache file %s, got %+v", cachePath, stale)
+}
+
+func TestCodexPluginMarketplaceNamesRejectsInvalidName(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(filepath.Join(projectDir, ".agents", "plugins"), 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	marketplace := `{
+  "name": "../outside",
+  "plugins": [
+    {"name": "crit", "source": {"source": "local", "path": "./plugins/crit"}}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(projectDir, ".agents", "plugins", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names := codexPluginMarketplaceNames(projectDir, homeDir)
+	if len(names) != 1 || names[0] != "local" {
+		t.Fatalf("marketplace names = %#v, want [local]", names)
+	}
+}
+
+func TestCodexPluginMarketplaceNamesAcceptsShorthandSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(filepath.Join(projectDir, ".agents", "plugins"), 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	marketplace := `{
+  "name": "personal",
+  "plugins": [
+    {"name": "crit", "source": "./plugins/crit"}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(projectDir, ".agents", "plugins", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names := codexPluginMarketplaceNames(projectDir, homeDir)
+	if len(names) != 2 || names[0] != "personal" || names[1] != "local" {
+		t.Fatalf("marketplace names = %#v, want [personal local]", names)
+	}
+}
+
+func TestCheckInstalledIntegrations_CodexPluginMissingMarketplaceConfigAndCache(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	homeDir := filepath.Join(tmpDir, "home")
+	os.MkdirAll(projectDir, 0o755)
+	os.MkdirAll(homeDir, 0o755)
+
+	manifest := integrationMap["codex-plugin"][0]
+	sourceContent, err := integrationsFS.ReadFile(manifest.source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(projectDir, "plugins", "crit", ".codex-plugin", "plugin.json")
+	os.MkdirAll(filepath.Dir(manifestPath), 0o755)
+	os.WriteFile(manifestPath, sourceContent, 0o644)
+
+	stale := checkInstalledIntegrations(projectDir, homeDir)
+	want := []string{
+		filepath.Join(projectDir, ".agents", "plugins", "marketplace.json"),
+		filepath.Join(homeDir, ".codex", "config.toml"),
+		filepath.Join(homeDir, ".codex", "plugins", "cache", "local", "crit", "local", ".codex-plugin", "plugin.json"),
+	}
+	for _, path := range want {
+		found := false
+		for _, s := range stale {
+			if s.agent == "codex-plugin" && s.dest == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected codex-plugin completeness warning for %s, got %+v", path, stale)
+		}
+	}
+}
+
+func TestCodexPluginConfigReadyRaw(t *testing.T) {
+	raw := strings.Join([]string{
+		"model = \"gpt-5.1\"",
+		"",
+		"[features]",
+		"plugins = true",
+		"hooks = true",
+		"plugin_hooks = true",
+		"",
+		"[plugins.\"crit@local\"]",
+		"enabled = true",
+		"",
+		"[plugins.\"other@local\"]",
+		"enabled = false",
+	}, "\n")
+	if !codexPluginConfigReadyRaw(raw, "crit@local") {
+		t.Fatal("expected crit plugin config to be ready")
+	}
+	if codexPluginConfigReadyRaw(raw, "other@local") {
+		t.Fatal("did not expect disabled plugin config to be ready")
+	}
+	if codexPluginConfigReadyRaw(strings.Replace(raw, "plugin_hooks = true", "plugin_hooks = false", 1), "crit@local") {
+		t.Fatal("did not expect config without plugin_hooks to be ready")
+	}
+	if codexPluginConfigReadyRaw(strings.Replace(raw, "plugins = true", "plugins = false", 1), "crit@local") {
+		t.Fatal("did not expect config without plugins to be ready")
+	}
+
+	commentedHeaders := strings.ReplaceAll(raw, "[features]", "[features] # managed")
+	commentedHeaders = strings.ReplaceAll(commentedHeaders, "[plugins.\"crit@local\"]", "[plugins.\"crit@local\"] # managed")
+	if !codexPluginConfigReadyRaw(commentedHeaders, "crit@local") {
+		t.Fatal("expected commented table headers to be ready")
+	}
+
+	arrayTableRaw := strings.Join([]string{
+		"[features]",
+		"hooks = true",
+		"",
+		"[[hooks.PreToolUse]]",
+		"plugins = true",
+		"plugin_hooks = true",
+		"",
+		"[plugins.\"crit@local\"]",
+		"enabled = true",
+	}, "\n")
+	if codexPluginConfigReadyRaw(arrayTableRaw, "crit@local") {
+		t.Fatal("did not expect feature keys in array tables to count")
+	}
+}
+
 func TestRunCheck_NoStale(t *testing.T) {
 	// runCheck uses os.Getwd() and os.UserHomeDir(), so we just verify it doesn't panic
 	// when called in a temp dir with no installed integrations

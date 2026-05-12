@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,6 +116,7 @@ func TestIntegrationMap_SnapshotGlobalRouting(t *testing.T) {
 		"cline":          {{"Cline/Rules/crit.md", globalDestDocuments}},
 		"gemini":         {{".gemini/skills/crit-cli/SKILL.md", globalDestRelHome}, {".gemini/commands/crit.toml", globalDestRelHome}, {".gemini/policies/crit.toml", globalDestRelHome}},
 		"grok":           {{"", globalDestNone}, {"", globalDestNone}},
+		"codex-plugin":   {{".codex/plugins/crit/.codex-plugin/plugin.json", globalDestRelHome}, {".codex/plugins/crit/skills/crit/SKILL.md", globalDestRelHome}, {".codex/plugins/crit/skills/crit-cli/SKILL.md", globalDestRelHome}, {".codex/plugins/crit/hooks/hooks.json", globalDestRelHome}},
 		"hermes":         {{".hermes/skills/crit/SKILL.md", globalDestRelHome}, {".hermes/skills/crit-cli/SKILL.md", globalDestRelHome}},
 		"pi":             {{".pi/agent/skills/crit/SKILL.md", globalDestRelHome}, {".pi/agent/skills/crit-cli/SKILL.md", globalDestRelHome}},
 	}
@@ -189,6 +191,563 @@ func TestInstallIntegration_GeminiWritesSettingsJSON(t *testing.T) {
 		}
 	}
 	t.Error("exit_plan_mode hook not found in .gemini/settings.json")
+}
+
+func TestInstallIntegration_CodexPluginEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "project")
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setHome(t, home)
+	t.Chdir(dir)
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("installIntegration: %v", err)
+	}
+
+	for _, path := range []string{
+		".agents/skills/crit/SKILL.md",
+		".agents/skills/crit-cli/SKILL.md",
+		"plugins/crit/.codex-plugin/plugin.json",
+		"plugins/crit/skills/crit/SKILL.md",
+		"plugins/crit/skills/crit-cli/SKILL.md",
+		"plugins/crit/hooks/hooks.json",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, path)); err != nil {
+			t.Fatalf("expected %s to be written: %v", path, err)
+		}
+	}
+
+	hookPath := filepath.Join(dir, "plugins/crit/hooks/hooks.json")
+	hookData, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hookData), "crit plan-hook --mode codex") {
+		t.Fatalf("plugin hook should invoke crit plan-hook --mode codex:\n%s", hookData)
+	}
+
+	marketplacePath := filepath.Join(dir, ".agents/plugins/marketplace.json")
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry after first install, got %d", got)
+	}
+	assertCritMarketplacePathExists(t, marketplacePath, dir)
+	assertCodexPluginEnabled(t, filepath.Join(home, ".codex", "config.toml"), "crit@local")
+	for _, path := range []string{
+		".codex/plugins/cache/local/crit/local/.codex-plugin/plugin.json",
+		".codex/plugins/cache/local/crit/local/skills/crit/SKILL.md",
+		".codex/plugins/cache/local/crit/local/hooks/hooks.json",
+	} {
+		if _, err := os.Stat(filepath.Join(home, path)); err != nil {
+			t.Fatalf("expected cache file %s to be written: %v", path, err)
+		}
+	}
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("second installIntegration: %v", err)
+	}
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected idempotent marketplace registration, got %d entries", got)
+	}
+}
+
+func TestInstallIntegration_CodexPluginGlobalEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	t.Chdir(home)
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("installIntegration: %v", err)
+	}
+
+	for _, path := range []string{
+		".agents/skills/crit/SKILL.md",
+		".agents/skills/crit-cli/SKILL.md",
+		".codex/plugins/crit/.codex-plugin/plugin.json",
+		".codex/plugins/crit/skills/crit/SKILL.md",
+		".codex/plugins/crit/skills/crit-cli/SKILL.md",
+		".codex/plugins/crit/hooks/hooks.json",
+	} {
+		if _, err := os.Stat(filepath.Join(home, path)); err != nil {
+			t.Fatalf("expected %s to be written: %v", path, err)
+		}
+	}
+
+	marketplacePath := filepath.Join(home, ".agents/plugins/marketplace.json")
+	if got := countCritMarketplaceEntries(t, marketplacePath, "./.codex/plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry after global install, got %d", got)
+	}
+	assertCritMarketplacePathExists(t, marketplacePath, home)
+	assertCodexPluginEnabled(t, filepath.Join(home, ".codex", "config.toml"), "crit@local")
+	if _, err := os.Stat(filepath.Join(home, ".codex/plugins/cache/local/crit/local/.codex-plugin/plugin.json")); err != nil {
+		t.Fatalf("expected global cache to be written: %v", err)
+	}
+}
+
+func TestInstallIntegration_CodexPluginDoesNotActivateExistingProjectFiles(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "project")
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(filepath.Join(dir, "plugins/crit/hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "plugins/crit/.codex-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setHome(t, home)
+	t.Chdir(dir)
+
+	staleHookPath := filepath.Join(dir, "plugins/crit/hooks/hooks.json")
+	if err := os.WriteFile(staleHookPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"stale-command"}]}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugins/crit/.codex-plugin/plugin.json"), []byte(`{"name":"crit","hooks":"./hooks/hooks.json"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installIntegration("codex-plugin", false); err != nil {
+		t.Fatalf("installIntegration: %v", err)
+	}
+
+	embeddedHook, err := integrationsFS.ReadFile("integrations/codex/plugin/crit/hooks/hooks.json")
+	if err != nil {
+		t.Fatalf("reading embedded hook: %v", err)
+	}
+	for _, path := range []string{
+		staleHookPath,
+		filepath.Join(home, ".codex/plugins/cache/local/crit/local/hooks/hooks.json"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if string(data) != string(embeddedHook) {
+			t.Fatalf("%s did not use embedded Crit hook:\n%s", path, data)
+		}
+	}
+}
+
+func TestInstallCodexPluginMarketplaceForceOverwritesInvalidJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", true); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	if got := countCritMarketplaceEntries(t, path, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplaceForceOverwritesMalformedPlugins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte(`{"plugins":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", true); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	if got := countCritMarketplaceEntries(t, path, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one Crit marketplace entry, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplaceInvalidJSONReturnsErrorWithoutForce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err == nil {
+		t.Fatal("expected invalid marketplace JSON to return an error")
+	}
+}
+
+func TestInstallCodexPluginMarketplaceMalformedPluginsReturnsErrorWithoutForce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	if err := os.WriteFile(path, []byte(`{"plugins":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err == nil {
+		t.Fatal("expected malformed plugins field to return an error")
+	}
+}
+
+func TestInstallCodexPluginMarketplaceRejectsWhitespaceNameWithoutForce(t *testing.T) {
+	for _, name := range []string{"local ", "   "} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "marketplace.json")
+			existing := fmt.Sprintf(`{
+  "name": %q,
+  "plugins": [
+    {"name": "crit", "source": {"source": "local", "path": "./plugins/crit"}}
+  ]
+}`, name)
+			if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err == nil {
+				t.Fatal("expected whitespace marketplace name to be rejected without force")
+			}
+		})
+	}
+}
+
+func TestInstallCodexPluginMarketplaceRepairsStaleSourcePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	stale := `{
+  "name": "local",
+  "plugins": [
+    {
+      "name": "crit",
+      "source": {"source": "local", "path": "./plugins/crit"},
+      "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./.codex/plugins/crit", false); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	if got := countCritMarketplaceEntries(t, path, "./.codex/plugins/crit"); got != 1 {
+		t.Fatalf("expected stale Crit marketplace entry to be replaced, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplaceRepairsStalePolicyAndDedupes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	stale := `{
+  "name": "local",
+  "plugins": [
+    {
+      "name": "crit",
+      "source": {"source": "local", "path": "./plugins/crit"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
+      "category": "Old Category"
+    },
+    {
+      "name": "crit",
+      "source": {"source": "local", "path": "./plugins/crit"},
+      "policy": {"installation": "INSTALLED_BY_DEFAULT", "authentication": "ON_INSTALL"},
+      "category": "Developer Tools"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	if got := countCritMarketplaceEntries(t, path, "./plugins/crit"); got != 1 {
+		t.Fatalf("expected one repaired Crit marketplace entry, got %d", got)
+	}
+}
+
+func TestInstallCodexPluginMarketplacePreservesOtherTypedFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	existing := `{
+  "name": "local",
+  "sentinel": {"keep": true},
+  "interface": {"displayName": "My Plugins", "theme": "dark"},
+  "plugins": [
+    {
+      "name": "other",
+      "source": {"source": "local", "path": "./other", "kind": "dev"},
+      "policy": {"authentication": "ON_USE", "extra": "kept"},
+      "category": "Other",
+      "summary": "keep me"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marketplace codexPluginMarketplace
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := marketplace.Extra["sentinel"]; !ok {
+		t.Fatalf("expected top-level sentinel to be preserved: %s", data)
+	}
+	if _, ok := marketplace.Interface.Extra["theme"]; !ok {
+		t.Fatalf("expected interface theme to be preserved: %s", data)
+	}
+	var other codexMarketplacePlugin
+	for _, plugin := range marketplace.Plugins {
+		if plugin.Name == "other" {
+			other = plugin
+			break
+		}
+	}
+	if other.Name == "" {
+		t.Fatalf("expected other plugin to be preserved: %s", data)
+	}
+	if len(other.Extra["summary"]) == 0 {
+		t.Fatalf("expected plugin summary to be preserved: %s", data)
+	}
+	if len(other.Source.Extra["kind"]) == 0 {
+		t.Fatalf("expected source kind to be preserved: %s", data)
+	}
+	if len(other.Policy.Extra["extra"]) == 0 {
+		t.Fatalf("expected policy extra to be preserved: %s", data)
+	}
+}
+
+func TestInstallCodexPluginMarketplacePreservesShorthandSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marketplace.json")
+	existing := `{
+  "name": "local",
+  "plugins": [
+    {"name": "other", "source": "./plugins/other", "category": "Other"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installCodexPluginMarketplace(path, "./plugins/crit", false); err != nil {
+		t.Fatalf("installCodexPluginMarketplace: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marketplace struct {
+		Plugins []struct {
+			Name   string          `json:"name"`
+			Source json.RawMessage `json:"source"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatal(err)
+	}
+	for _, plugin := range marketplace.Plugins {
+		if plugin.Name == "other" && string(plugin.Source) == `"./plugins/other"` {
+			return
+		}
+	}
+	t.Fatalf("expected shorthand source to be preserved: %s", data)
+}
+
+func TestUpsertCodexPluginConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "creates plugin table",
+			want: "[features]\nplugins = true\nhooks = true\nplugin_hooks = true\n\n[plugins.\"crit@local\"]\nenabled = true\n",
+		},
+		{
+			name: "enables existing plugin table",
+			raw:  "[plugins.\"crit@local\"]\nenabled = false\nsource = \"keep\"\n",
+			want: "[plugins.\"crit@local\"]\nenabled = true\nsource = \"keep\"\n\n[features]\nplugins = true\nhooks = true\nplugin_hooks = true\n",
+		},
+		{
+			name: "preserves surrounding config",
+			raw:  "model = \"gpt-5.1\"\n\n[features]\nhooks = false\n\n[plugins.\"other@local\"]\nenabled = true\n",
+			want: "model = \"gpt-5.1\"\n\n[features]\nhooks = true\nplugins = true\nplugin_hooks = true\n\n[plugins.\"other@local\"]\nenabled = true\n\n[plugins.\"crit@local\"]\nenabled = true\n",
+		},
+		{
+			name: "updates commented table headers",
+			raw:  "[features] # managed by user\nhooks = false\n\n[plugins.\"crit@local\"] # existing plugin\nenabled = false\n",
+			want: "[features] # managed by user\nhooks = true\nplugins = true\nplugin_hooks = true\n\n[plugins.\"crit@local\"] # existing plugin\nenabled = true\n",
+		},
+		{
+			name: "stops before array table headers",
+			raw:  "[features]\nhooks = false\n\n[[hooks.PreToolUse]]\nmatcher = \"shell\"\n\n[plugins.\"crit@local\"]\nenabled = false\n",
+			want: "[features]\nhooks = true\nplugins = true\nplugin_hooks = true\n\n[[hooks.PreToolUse]]\nmatcher = \"shell\"\n\n[plugins.\"crit@local\"]\nenabled = true\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upsertCodexPluginConfig(tt.raw, "crit@local"); got != tt.want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstallCodexPluginConfigPreservesModeAndSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed-config.toml")
+	link := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(target, []byte("model = \"gpt-5.1\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installCodexPluginConfig(link, "crit@local"); err != nil {
+		t.Fatalf("installCodexPluginConfig: %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil {
+		t.Fatal(err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected config path symlink to be preserved")
+	}
+	if info, err := os.Stat(target); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[plugins.\"crit@local\"]") {
+		t.Fatalf("expected target config to be updated, got:\n%s", data)
+	}
+}
+
+func TestInstallCodexPluginConfigDefaultsNewFileTo0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := installCodexPluginConfig(path, "crit@local"); err != nil {
+		t.Fatalf("installCodexPluginConfig: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestCodexPluginCachePathComponentsAreValidated(t *testing.T) {
+	for _, value := range []string{"", "..", ".", "bad/name", `bad\name`, "bad.name", "bad name", " ", " local", "local ", "ümlaut"} {
+		if _, err := validCodexPluginSegment(value, "test"); err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+	for _, value := range []string{"local", "my_market-1"} {
+		if got, err := validCodexPluginSegment(value, "test"); err != nil || got != value {
+			t.Fatalf("valid component = %q, %v; want %q, nil", got, err, value)
+		}
+	}
+}
+
+func TestCodexPluginManifestVersionRejectsWhitespace(t *testing.T) {
+	if _, err := codexPluginManifestVersionFromBytes([]byte(`{"version":"   "}`)); err == nil {
+		t.Fatal("expected whitespace version to be rejected")
+	}
+	if got, err := codexPluginManifestVersionFromBytes([]byte(`{}`)); err != nil || got != "local" {
+		t.Fatalf("version = %q, %v; want local, nil", got, err)
+	}
+}
+
+func countCritMarketplaceEntries(t *testing.T, path, wantSourcePath string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected marketplace at %s: %v", path, err)
+	}
+	var marketplace codexPluginMarketplace
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatalf("marketplace is not valid JSON: %v", err)
+	}
+	count := 0
+	for _, plugin := range marketplace.Plugins {
+		if plugin.Name != "crit" {
+			continue
+		}
+		count++
+		if plugin.Source.Source != "local" || plugin.Source.Path != wantSourcePath {
+			t.Fatalf("unexpected Crit plugin source: %+v", plugin.Source)
+		}
+		if plugin.Policy.Installation != "INSTALLED_BY_DEFAULT" {
+			t.Fatalf("unexpected Crit plugin policy: %+v", plugin.Policy)
+		}
+		if plugin.Policy.Authentication != "ON_INSTALL" {
+			t.Fatalf("unexpected Crit plugin auth policy: %+v", plugin.Policy)
+		}
+		if plugin.Category != "Developer Tools" {
+			t.Fatalf("unexpected Crit plugin category: %+v", plugin.Category)
+		}
+	}
+	return count
+}
+
+func assertCritMarketplacePathExists(t *testing.T, marketplacePath, marketplaceRoot string) {
+	t.Helper()
+
+	data, err := os.ReadFile(marketplacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marketplace codexPluginMarketplace
+	if err := json.Unmarshal(data, &marketplace); err != nil {
+		t.Fatal(err)
+	}
+	for _, plugin := range marketplace.Plugins {
+		if plugin.Name != "crit" {
+			continue
+		}
+		relPath := plugin.Source.Path
+		pluginRoot := filepath.Join(marketplaceRoot, relPath)
+		manifestPath := filepath.Join(pluginRoot, ".codex-plugin", "plugin.json")
+		if _, err := os.Stat(manifestPath); err != nil {
+			t.Fatalf("marketplace path %q should resolve to installed plugin manifest %s: %v", relPath, manifestPath, err)
+		}
+		return
+	}
+	t.Fatal("Crit marketplace entry not found")
+}
+
+func assertCodexPluginEnabled(t *testing.T, path, pluginKey string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected Codex config at %s: %v", path, err)
+	}
+	want := "[plugins.\"" + pluginKey + "\"]\nenabled = true"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("expected Codex config to enable %s, got:\n%s", pluginKey, data)
+	}
+	if !codexPluginConfigReadyRaw(string(data), pluginKey) {
+		t.Fatalf("expected Codex config to enable plugins, hooks, plugin_hooks, and %s, got:\n%s", pluginKey, data)
+	}
 }
 
 // TestInstallIntegration_HermesPrintsExternalDirsNote verifies that on a
