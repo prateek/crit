@@ -259,6 +259,8 @@ func xdgUserDir(name string) (string, error) {
 // installIntegration installs the named agent integration. It returns an
 // error suitable for printing to stderr; callers decide whether to exit or
 // continue (the `install all` loop continues past per-agent failures).
+//
+//nolint:gocyclo // per-agent special cases are clearer inline than abstracted
 func installIntegration(name string, force bool) error {
 	if name == "aider" {
 		return installAider(force)
@@ -714,6 +716,7 @@ func desiredCodexMarketplacePlugin(sourcePath string) codexMarketplacePlugin {
 	}
 }
 
+//nolint:gocyclo // marketplace read-merge-write has inherent branching for force/exists/valid/changed
 func installCodexPluginMarketplace(path, sourcePath string, force bool) (string, error) {
 	existing := codexPluginMarketplace{}
 	changed := false
@@ -835,6 +838,7 @@ func codexPluginSourceRoot(global bool, home string) string {
 
 const codexPluginEmbeddedPrefix = "integrations/codex/plugin/crit/"
 
+//nolint:unparam // global is passed for symmetry with other install* funcs; activation always targets ~/.codex
 func installCodexPluginActivation(global bool, home, marketplaceName string) error {
 	if marketplaceName == "" {
 		marketplaceName = "local"
@@ -1012,6 +1016,7 @@ func upsertCodexPluginConfig(raw, pluginKey string) string {
 	return upsertTomlBool(raw, fmt.Sprintf("plugins.%q", pluginKey), "enabled", true)
 }
 
+//nolint:unparam // value is always true today, but the function is designed for general TOML bool upsert
 func upsertTomlBool(raw, table, key string, value bool) string {
 	header := fmt.Sprintf("[%s]", table)
 	replacement := fmt.Sprintf("%s = %t", key, value)

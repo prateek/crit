@@ -1,21 +1,26 @@
 ---
 name: crit
-description: Review code changes, PRs, commit ranges, or explicitly named files/plans with crit inline comments. Use when the user invokes $crit or asks for structured human feedback on code or a specific review target.
+description: Review code changes, a plan, a live page (running dev server), or a local HTML file with crit inline comments. Use when asked to review code, a plan, a diff, a running web app, or when you want structured human feedback on your work.
 ---
 
 # Review with Crit
 
-Review and revise code changes or a plan using `crit` for inline comment review.
+Review and revise code changes, plans, live pages (running dev servers, staging URLs), or local HTML files using `crit` for inline comment review.
 
-## Step 1: Determine review mode
+## Step 1: Pass arguments to `crit`
 
-Pick whichever applies — don't ask for confirmation:
+The CLI auto-detects the review mode from its arguments. **Do not ask the user which mode to use.** Pass arguments through:
 
-1. **PR or commit range** — user asked to review a specific GitHub PR or commit range → `crit --pr <num|url>` or `crit --range <baseSHA>..<headSHA>`. Boots crit in *range mode*, scoping the review to a fixed range of commits rather than the working tree.
-2. **Explicit file/plan argument** — user specified a file, directory, or plan path (e.g. `$crit my-plan.md`) → `crit <path>`
-3. **Default `$crit` / branch review** — otherwise → bare `crit`. Auto-detects uncommitted changes or branch-vs-default-branch diff. Works on clean branches.
+```
+crit <arguments>               # file, dir, URL, .html — CLI auto-detects mode
+crit --pr <num|url>            # GitHub PR (range mode)
+crit --range <base>..<head>    # commit range (range mode)
+crit                           # no args → branch diff
+```
+If no arguments, check conversation context:
 
-Do **not** infer a recent plan file for bare `$crit`. Bare `$crit` should behave like Claude Code's `/crit`: review the current code changes in git mode unless the user explicitly names a file, plan, PR, or range.
+1. A plan file was written earlier in this conversation → `crit <plan-file>`
+2. Otherwise → bare `crit` (branch diff)
 
 ## Step 2: Launch crit and block until review completes
 
@@ -49,7 +54,7 @@ The file contains structured JSON. Three comment types:
 - File comments (per-file `comments` array, no `start_line`/`end_line`) — about the file as a whole
 - Line comments (per-file `comments` array, with `start_line`/`end_line`) — about specific lines
 
-Identify all comments where `resolved` is `false` or missing.
+Identify all comments where `resolved` is `false` or missing. Unresolved comments may have `replies` — read them before acting.
 
 When a comment has these fields:
 - `quote`: the specific text the reviewer selected — focus your changes on the quoted text rather than the entire line range
@@ -106,7 +111,7 @@ crit share <file>
 To remove a shared review:
 
 ```bash
-crit unpublish
+crit unpublish [file...]
 ```
 
 ### QR codes

@@ -59,7 +59,7 @@ Field rules:
 - `quote` (optional): the specific text the reviewer selected — narrows scope within the line range. Focus changes on the quoted text rather than the entire range.
 - `anchor` (line comments): full text of the commented lines when placed. When edits shift line numbers, locate content by anchor rather than trusting `start_line`/`end_line`.
 - `drifted: true`: original content was removed or heavily rewritten — line numbers are approximate at best.
-- Before acting on a comment, check `replies` — if you've already replied, the reviewer may be following up rather than requesting a new change.
+- Unresolved comments may have `replies` — read them before acting.
 
 ## Authoring comments
 
@@ -156,12 +156,15 @@ Requires `gh` CLI installed and authenticated. PR number is auto-detected from t
 ## Sharing
 
 ```bash
-crit share <file> [file...]   # Upload and print URL
-crit share --qr <file>        # Also print QR code (terminal only)
-crit unpublish                # Remove shared review
+crit share <file> [file...]                          # Upload and print URL
+crit share --qr <file>                               # Also print QR code (terminal only)
+crit share --org <slug> <file>                       # Share under an organization
+crit share --org <slug> --visibility unlisted <file> # Org share with explicit visibility
+crit unpublish [file...]                              # Remove shared review
 ```
 
 - **Always relay the output** — copy the URL (and QR if used) into your response. Don't make the user dig through tool output.
 - **`--qr` is terminal-only** — skip in mobile apps, web chat UIs, or anywhere Unicode block characters won't render correctly.
+- **`--org <slug>`** shares under an organization. Visibility defaults to `organization` (members only). Override with `--visibility` (`organization`, `unlisted`, `public`).
 - If a review file exists, comments for the shared files are included automatically.
 - **Unpublish uses the persisted delete token** in the review file — no extra args needed.
