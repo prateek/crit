@@ -9,12 +9,13 @@ Review and revise code changes or a plan using `crit` for inline comment review.
 
 ## Step 1: Determine review mode
 
-Pick whichever applies — don't ask for confirmation:
+Pick whichever applies — don't ask which *mode* to use. Asking which *target* to review is correct when it is genuinely ambiguous, as in 3.
 
-1. **User argument** — `$ARGUMENTS` provided (e.g., `/crit plan.md`) → review that file
+1. **User argument** — `$ARGUMENTS` provided (e.g., `/crit plan.md`) → `crit $ARGUMENTS`. Pass it through verbatim: the CLI auto-detects a file, directory, URL, flag or subcommand.
 2. **Recent plan** — no argument, but a plan was written earlier in this conversation → `crit <plan-file>`
-3. **Branch review** — otherwise → bare `crit`. Auto-detects uncommitted changes or branch-vs-default-branch diff. Works on clean branches.
-4. **PR / commit range** — user asked to review a specific GitHub PR, GitLab MR, or a commit range → `crit --pr <num|url>`, `crit --mr <iid|url>`, or `crit --range <baseSHA>..<headSHA>` (boots crit in *range mode*, scoping the review to a fixed range of commits rather than the working tree).
+3. **PR / commit range** — user asked to review a specific GitHub PR, GitLab MR, or a commit range → `crit --pr <num|url>`, `crit --mr <iid|url>`, or `crit --range <baseSHA>..<headSHA>` (boots crit in *range mode*, scoping the review to a fixed range of commits rather than the working tree).
+4. **Message on screen** — no flag, no subcommand (`live`, `preview`, `plan`, `story`), no plan file, and the previous reply is substantial prose the user is plausibly reacting to → ask which they meant, in one line: the code changes, or that message. To review the message, write it to a markdown file and pass that path.
+5. **Branch review** — otherwise → bare `crit`. Auto-detects uncommitted changes or branch-vs-default-branch diff. Works on clean branches.
 
 ## Step 2: Launch crit and wait for review completion
 

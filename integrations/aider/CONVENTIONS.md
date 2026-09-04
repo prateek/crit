@@ -8,6 +8,14 @@ launching Crit.
 
 After the user explicitly asks to use Crit, launch it:
 
+Pick the target before launching. With no argument, or a bare word that names
+no file and is neither a flag nor a subcommand (`live`, `preview`, `plan`,
+`story`): a plan file written earlier → that file; the user named an artifact →
+that artifact; the previous reply is substantial prose they are reacting to →
+ask which they meant, the code changes or that message; otherwise → bare
+`crit`. To review a message, write it to a markdown file first and pass that
+path: crit takes files, not chat text.
+
 ```bash
 crit $PLAN_FILE                       # Review a specific file
 crit                                  # Review all changed files in the repo

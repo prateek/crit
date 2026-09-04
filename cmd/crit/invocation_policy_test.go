@@ -179,3 +179,97 @@ func TestPlanExitHooksRemainEnabled(t *testing.T) {
 		}
 	}
 }
+
+func TestNoArgumentRoutingOffersTheOnScreenMessage(t *testing.T) {
+	// A bare invocation right after a substantial reply is ambiguous between the
+	// branch diff and the message the user is looking at. Every surface that can
+	// launch Crit must offer that third target and name both candidates, so the
+	// ambiguity is resolved by asking rather than by guessing.
+	paths := []string{
+		"integrations/claude-code/skills/crit/SKILL.md",
+		"integrations/cursor/skills/crit/SKILL.md",
+		"integrations/github-copilot/skills/crit/SKILL.md",
+		"integrations/grok/skills/crit/SKILL.md",
+		"integrations/ampcode/skills/crit/SKILL.md",
+		"integrations/pi/skills/crit/SKILL.md",
+		"integrations/qwen/skills/crit/SKILL.md",
+		"integrations/codex/skills/crit/SKILL.md",
+		"integrations/codex/plugin/crit/skills/crit/SKILL.md",
+		"integrations/hermes/skills/crit/SKILL.md",
+		"integrations/gemini/commands/crit.toml",
+		"integrations/opencode/crit.md",
+		"integrations/aider/CONVENTIONS.md",
+		"integrations/cline/crit.md",
+		"integrations/windsurf/crit.md",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			// Collapse whitespace: these files hard-wrap prose, so a phrase can
+			// straddle a line break without changing what it says.
+			content := strings.Join(strings.Fields(readIntegrationForPolicyTest(t, path)), " ")
+			ask := strings.Index(content, "ask which they meant")
+			if ask < 0 {
+				t.Fatalf("%s does not offer the on-screen message as a review target", path)
+			}
+			// Naming both candidates is what makes the question answerable.
+			for _, want := range []string{"the code changes", "that message"} {
+				if !strings.Contains(content, want) {
+					t.Fatalf("%s asks which target but never names %q", path, want)
+				}
+			}
+			// The ask must be conditional, not unconditional: a surface that always
+			// asks is as wrong as one that never does.
+			for _, guard := range []string{"no argument", "No argument", "no flag"} {
+				if strings.Contains(content[:ask], guard) {
+					goto guarded
+				}
+			}
+			t.Fatalf("%s asks unconditionally; the ask must be gated on there being no usable argument", path)
+		guarded:
+			// Flags and subcommands must pass straight through rather than
+			// entering the ladder. Naming both is what keeps `/crit --pr 42`
+			// and `/crit story` out of it; naming only flags let `story` in.
+			for _, kind := range []string{"flag", "subcommand"} {
+				if !strings.Contains(content[:ask], kind) {
+					t.Fatalf("%s does not exempt %ss from the conversation ladder", path, kind)
+				}
+			}
+			// The branch-diff fallback comes after the ask, or the ladder reaches
+			// it first and the question is dead prose. Search from the ask onward:
+			// every file also names bare `crit` in its command table.
+			if !strings.Contains(content[ask:], "bare `crit`") {
+				t.Fatalf("%s offers to ask but never falls back to the branch diff after it", path)
+			}
+		})
+	}
+}
+
+func TestUserArgumentRungPassesArgumentsThrough(t *testing.T) {
+	// The rung that reads the user's argument sits above the ladder's flag and
+	// subcommand exemptions, so it is what decides where `/crit --pr 42` and
+	// `/crit story` go. Classifying the argument as a file there routes both
+	// down the file-review path; handing it to the CLI lets crit detect the mode.
+	cases := []struct{ path, token string }{
+		{"integrations/gemini/commands/crit.toml", "{{args}}"},
+		{"integrations/opencode/crit.md", "$ARGUMENTS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			content := strings.Join(strings.Fields(readIntegrationForPolicyTest(t, tc.path)), " ")
+			rung := strings.Index(content, "**User argument**")
+			if rung < 0 {
+				t.Fatalf("%s has no user-argument rung to check", tc.path)
+			}
+			rungText := content[rung:]
+			if end := strings.Index(rungText, "**Recent plan**"); end > 0 {
+				rungText = rungText[:end]
+			}
+			if !strings.Contains(rungText, "`crit "+tc.token+"`") {
+				t.Fatalf("%s does not hand %s to crit; pass it through so the CLI detects flags and subcommands", tc.path, tc.token)
+			}
+			if strings.Contains(rungText, "review that file") {
+				t.Fatalf("%s treats the user argument as a file, which misroutes `/crit --pr 42` and `/crit story`", tc.path)
+			}
+		})
+	}
+}
