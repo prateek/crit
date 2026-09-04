@@ -118,6 +118,71 @@ Hard rules:
 - **Reply bodies support markdown** — use code fences and inline code where helpful.
 - **Only pass `--resolve` when the user explicitly asks.** Never resolve proactively. Same rule applies to the `resolve` field in `--json` mode.
 
+## Verifying comments are visible
+
+`crit comments` and the review file are the **store**. The browser renders the
+running daemon's **filtered projection** of that store, scoped to the session's
+current focus. A comment can be present in both and still render nowhere, so
+reading it back with `crit comments` does not prove the reviewer can see it.
+
+Check what the daemon actually serves before handing the review back. Wait for
+readiness first, and give `crit comment` a second to land: it writes to disk and
+the daemon picks it up on a one-second watcher tick, so an id missing
+immediately after the CLI returns proves nothing.
+
+```bash
+IDS='c_a1b2c3 c_d4e5f6'                       # every id you just authored
+FILE=<repo-relative-path>                     # repeat the file GET per file you touched
+
+PORT=$(crit status --json | jq -r '.daemon.port // empty')
+[ -n "$PORT" ] || { echo 'several sessions match; pick one from .sessions[]'; exit 1; }
+
+for _ in $(seq 20); do                        # 503 while the daemon builds the projection
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/session")
+  case "$code" in
+    200) break ;;
+    503) sleep 1 ;;
+    *) echo "daemon returned $code"; exit 1 ;; # 000 is a dead daemon, not a slow one
+  esac
+done
+[ "$code" = 200 ] || { echo 'daemon never became ready'; exit 1; }
+
+for _ in $(seq 5); do                         # the watcher tick has arbitrary phase
+  served=$( { curl -s --get --data-urlencode "path=$FILE" \
+                "http://127.0.0.1:$PORT/api/file/comments"
+              curl -s "http://127.0.0.1:$PORT/api/comments"
+            } | jq -r '.[]?.id, .[]?.replies[]?.id' )
+  missing=
+  for id in $IDS; do
+    printf '%s\n' "$served" | grep -qxF "$id" || missing="$missing $id"
+  done
+  [ -z "$missing" ] && break
+  sleep 1
+done
+[ -z "$missing" ] || { echo "daemon does not serve:$missing"; exit 1; }
+curl -s "http://127.0.0.1:$PORT/api/health"
+```
+
+- Check every id you authored, not a sample. Line and file comments come back
+  from `/api/file/comments?path=`, review-level comments from `/api/comments`,
+  and a `--reply-to` id sits under its parent's `replies`. Match the `id` field
+  exactly: a substring search over the body also matches quoted code.
+- When `crit comments` lists an id and the daemon still does not serve it after
+  the tick, the active focus filters it out; re-author it through the daemon.
+- `crit status --json` omits `.daemon.port` while several sessions match the
+  branch. Read the port out of `.sessions[]` instead, picking the id you want:
+  `crit status` takes no `--session`.
+- `/api/health` reports `browser_clients`, a boolean that is true while at
+  least one tab holds an `/api/events` connection. Read it as a hint: a tab
+  that is loading or reconnecting reads as `false`.
+- A line or file comment you POST does not reach an open tab on its own; that
+  path emits no `comments-changed`. The daemon serving your comment and the
+  reviewer seeing it stay two different facts, so ask them to reload.
+- Reconnecting to a live daemon keeps its focus. Restarting a dead one loses it:
+  a `--pr`, `--mr` or `--range` session persists no `cli_args`, so
+  `crit --session <id>` comes back in working-tree focus and hides every comment
+  scoped to the old focus. Relaunch with the invocation that created the review.
+
 ## Bulk commenting (3+ comments)
 
 Use `--json` for atomicity (single write, no partial state) and speed (one process). The JSON can come from stdin or `--file <path>`:
@@ -174,6 +239,49 @@ Plan reviews (via `crit plan` or the ExitPlanMode hook) store the review file in
 ```bash
 crit comment --plan my-plan-2026-03-23 --reply-to c_a1b2c3 --author 'OpenCode' 'Updated the plan'
 ```
+
+## Editing comments through the daemon API
+
+While `crit` is running, the daemon holds the comments in memory and is the
+source of truth. Within a round it merges only structural changes from the
+review file, so a body you edit directly in `review.json` reaches neither the
+daemon nor the browser, and the daemon can overwrite it on its next write. The
+next round transition reloads file comments from disk and would carry that body
+forward, which makes the outcome depend on timing you do not control. There is
+no CLI verb for editing a comment body — use the HTTP API.
+
+Get the port from `crit status --json` (`.daemon.port`), and poll
+`GET /api/session` until it answers 200 before calling anything else. 503 means
+the session is still initialising; 500 means initialisation failed, and no
+amount of waiting fixes it.
+
+```
+GET|POST   /api/file/comments?path=<repo-rel>              list / add line and file comments
+PUT|DELETE /api/comment/<id>?path=<repo-rel>               update body / delete
+POST       /api/comment/<id>/replies?path=<repo-rel>       add a reply
+PUT|DELETE /api/comment/<id>/replies/<rid>?path=<repo-rel> edit / delete a reply
+PUT        /api/comment/<id>/resolve?path=<repo-rel>       set resolved
+GET|POST   /api/comments                                   list / add review-level comments
+PUT|DELETE /api/review-comment/<id>                        review-level update / delete
+POST       /api/review-comment/<id>/replies                add a review-level reply
+PUT|DELETE /api/review-comment/<id>/replies/<rid>          edit / delete one
+PUT        /api/review-comment/<id>/resolve                set resolved
+GET        /api/health                                     liveness, plus browser_clients
+```
+
+- `POST /api/file/comments` takes `{start_line, end_line, body, author}` and
+  stamps the session's focus onto the new comment, which makes it the reliable
+  authoring path inside a `--pr` or `--range` session. A file-level comment
+  needs `"scope": "file"`; without it the omitted lines fail the line-range
+  check.
+- `PUT` replaces the body and leaves a line comment's range alone; to move one,
+  POST a copy at the new lines and DELETE the old id. It does carry
+  `dom_anchor`, so a live-mode pin can be re-anchored in place.
+- Review-scope ids (`r_…`) live under `/api/review-comment/<id>`, take no
+  `path`, and are listed by `GET /api/comments`.
+- A round transition mints fresh ids for every carried-forward comment on a
+  file, line scope and file scope alike, while review-level ids stay put.
+  Re-read ids from `GET /api/file/comments` before editing one.
 
 ## GitHub PR / GitLab MR Integration
 
