@@ -119,7 +119,9 @@ func listOpenGitLabChanges(ctx context.Context) ([]forge.ChangeSummary, error) {
 func init() {
 	forge.SelectProviderFn = selectProvider
 	forge.ReviewFn = session.RunReview
-	session.InvalidatePRCache = github.InvalidatePRCache
+	session.InvalidatePRCache = func(number int, project, host string) {
+		github.InvalidatePR(forge.ChangeID{Number: number, Project: project, Host: host})
+	}
 	session.FetchMRFileContent = func(f session.Focus, sha, path string) ([]byte, error) {
 		project := f.RemoteProject
 		if sha == f.BaseSHA && f.RemoteBaseProject != "" {
@@ -198,9 +200,18 @@ func init() {
 			IgnorePatterns: sc.IgnorePatterns,
 		})
 	}
+	wirePRResolveHooks()
+	wireMRResolveHooks()
+}
+
+func wirePRResolveHooks() {
 	focus.SetPRResolveHooks(
-		func(prNum int) (focus.ChangeResolveInfo, error) {
-			info, err := github.FetchPRByNumber(prNum)
+		func(spec string) (focus.ChangeResolveInfo, error) {
+			id, err := github.ParsePRSpec(spec)
+			if err != nil {
+				return focus.ChangeResolveInfo{}, err
+			}
+			info, err := github.FetchPR(id)
 			if err != nil {
 				return focus.ChangeResolveInfo{}, err
 			}
@@ -213,6 +224,9 @@ func init() {
 				BaseRefName:       info.BaseRefName,
 				HeadRefName:       info.HeadRefName,
 				HeadRepoURL:       info.HeadRepoURL,
+				BaseRepoProject:   id.Project, // only URL-derived; bare --pr stays checkout-scoped
+				HeadRepoProject:   github.ProjectFromRemoteURL(info.HeadRepoURL),
+				HeadRepoHost:      id.Host,
 				IsCrossRepository: info.IsCrossRepository,
 			}, nil
 		},
@@ -230,6 +244,9 @@ func init() {
 			}, v)
 		},
 	)
+}
+
+func wireMRResolveHooks() {
 	focus.SetMRResolveHooks(
 		func(spec string) (focus.ChangeResolveInfo, error) {
 			id, err := gitlab.ParseMRSpec(spec)

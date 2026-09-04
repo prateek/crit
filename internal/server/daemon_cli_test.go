@@ -34,6 +34,45 @@ func TestFocusKeyArgs_PR(t *testing.T) {
 	}
 }
 
+func TestFocusKeyArgs_PRWithRemoteBaseProject(t *testing.T) {
+	sc := &server.DaemonCLIConfig{Focus: &server.Focus{
+		Kind: server.FocusRange, Forge: "github", ChangeNumber: 1,
+		RemoteBaseProject: "myorg/repo-b",
+	}}
+	got := server.FocusKeyArgs(sc)
+	if len(got) != 1 || got[0] != "pr:myorg/repo-b#1" {
+		t.Errorf("got %v want [pr:myorg/repo-b#1]", got)
+	}
+}
+
+func TestFocusKeyArgs_PRWithEnterpriseHost(t *testing.T) {
+	sc := &server.DaemonCLIConfig{Focus: &server.Focus{
+		Kind: server.FocusRange, Forge: "github", ChangeNumber: 9,
+		RemoteBaseProject: "acme/app", RemoteHost: "github.example.com",
+	}}
+	got := server.FocusKeyArgs(sc)
+	if len(got) != 1 || got[0] != "pr:github.example.com/acme/app#9" {
+		t.Errorf("got %v want [pr:github.example.com/acme/app#9]", got)
+	}
+}
+
+func TestFocusKeyArgs_PRWithGitHubDotComHostOmitsHost(t *testing.T) {
+	sc := &server.DaemonCLIConfig{Focus: &server.Focus{
+		Kind: server.FocusRange, Forge: "github", ChangeNumber: 4,
+		RemoteBaseProject: "o/r", RemoteHost: "github.com",
+	}}
+	got := server.FocusKeyArgs(sc)
+	if len(got) != 1 || got[0] != "pr:o/r#4" {
+		t.Errorf("got %v want [pr:o/r#4]", got)
+	}
+}
+
+func TestFocusKeyArgs_NilConfig(t *testing.T) {
+	if got := server.FocusKeyArgs(nil); got != nil {
+		t.Errorf("got %v want nil", got)
+	}
+}
+
 func TestFocusKeyArgs_MR(t *testing.T) {
 	sc := &server.DaemonCLIConfig{Focus: &server.Focus{Kind: server.FocusRange, Forge: "gitlab", ChangeNumber: 42}}
 	got := server.FocusKeyArgs(sc)
