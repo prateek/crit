@@ -43,6 +43,37 @@ To review something that exists only in the conversation, write it to a
 markdown file and pass that path. `crit` reviews any file, including one
 outside a repository.
 
+<important if="the branch sits in a stack of dependent branches">
+
+Range mode is what makes crit stack-aware. Bare `crit` and `--base-branch` both
+review in working-tree focus, where the picker offers no stack switcher.
+`--range` puts the session in range focus, where the picker offers the layers it
+can see and the reviewer hops between them.
+
+```bash
+crit --pr <num>                      # one layer, exactly what that pull request holds
+crit --mr <iid>                      # the same, on GitLab
+crit --range <parent-branch>..HEAD   # one layer, while the parent is an ancestor of HEAD
+crit --range <trunk>..HEAD           # every layer, the stack as one diff
+```
+
+Prefer `--pr`, or `--mr` on GitLab, for a single layer that has one. `--range`
+is a two-dot diff between the two tips, so once the parent branch advances it
+pulls in commits that belong to the parent. Both forge modes diff from the
+merge-base instead and do not, as long as the base and head commits resolve
+locally: under `--remote` the merge-base lookup can fail and crit falls back to
+the base tip, which is a two-dot diff again.
+
+The picker walks at most twenty ancestor commits and, on git, keeps only the
+topic chain, so a deep stack or a branch that is not an ancestor of HEAD will be
+missing from the switcher.
+
+`crit story` resolves its own session from its own arguments rather than
+inheriting an open review's focus. Repeat whichever of `--pr`, `--mr` or
+`--range` you used, or the story narrates the working tree instead of the
+commits.
+</important>
+
 <important if="the user wants to open the review from another device — e.g. a phone over Tailscale">
 Keep crit on loopback and reverse-proxy in. Same Step 1 args still apply (file, bare `crit`, etc.):
 
