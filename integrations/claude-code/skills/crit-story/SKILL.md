@@ -15,10 +15,22 @@ requests.
 Primary path: author in-session with `--guide` / `--prep` / `--story-file`
 (do **not** run bare `crit story`, which spends `agent_cmd` tokens).
 
+## Scope: select it once, pass it to all three commands
+
+`crit story` resolves its scope from its own arguments on every run. It does not
+inherit an open review's focus, so `<scope>` below stands for one flag you pick
+now and repeat verbatim in Steps 1, 2 and 4.
+
+Select it the way you would for a review: `--pr <num>` or `--mr <iid>` for a
+layer that has one, `--range <parent>..HEAD` for a stacked layer that does not,
+and `--range <trunk>..HEAD` for the whole stack. With no scope flag `crit story`
+diffs the working tree against the default branch, which on a stacked branch is
+every layer at once — drop `<scope>` only when that is what you want.
+
 ## Step 1: Fetch the guide
 
 ```bash
-crit story --guide
+crit story --guide <scope>
 ```
 
 This prints the resolved authoring guide (the user's customized version if
@@ -30,7 +42,7 @@ it is the source of truth, not this file.
 ## Step 2: Write the prep file
 
 ```bash
-crit story --prep /tmp/crit-story-prep.txt
+crit story --prep /tmp/crit-story-prep.txt <scope>
 ```
 
 This writes the full, untrimmed diff (commit messages + every hunk with its
@@ -40,15 +52,18 @@ that file** — the diff is never inlined into the guide prompt.
 ## Step 3: Author the story JSON
 
 Following the guide from Step 1, cluster hunks by theme (not by file) and
-write a JSON object with **only** `prologue`, `chapters`, and `support` to a
-temp file, e.g. `/tmp/crit-story.json`. Do not include `version`,
-`generated_at`, `agent`, `base_sha`, `head_sha`, `scope_fingerprint`, or
-`coverage` — crit fills those in.
+write a JSON object with `prologue`, `chapters`, `support` and
+`scope_fingerprint` to a temp file, e.g. `/tmp/crit-story.json`. Copy
+`scope_fingerprint` verbatim from the prep file's `=== SCOPE ===` header:
+ingest re-derives it from the live diff and rejects the story with a drift
+error when the two differ. Omit it and that check is skipped entirely, so a
+story prepped at one scope ingests silently against another. Leave `version`,
+`generated_at`, `agent`, `base_sha`, `head_sha` and `coverage` out.
 
 ## Step 4: Ingest
 
 ```bash
-crit story --story-file /tmp/crit-story.json
+crit story --story-file /tmp/crit-story.json <scope>
 ```
 
 Exit 0 means the story was saved (crit opens the browser to show it). Exit 1

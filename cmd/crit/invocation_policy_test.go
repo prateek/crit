@@ -273,3 +273,52 @@ func TestUserArgumentRungPassesArgumentsThrough(t *testing.T) {
 		})
 	}
 }
+
+func TestStorySkillsCarryScopeThroughEveryInvocation(t *testing.T) {
+	// `crit story` resolves scope per invocation, so --guide, --prep and
+	// --story-file each need the same flag. A story prepped over one range and
+	// ingested against another is only caught when the author copies
+	// scope_fingerprint out of the prep header; without it ingest skips the
+	// drift check and saves a story describing hunks the scope does not hold.
+	paths := []string{
+		"integrations/ampcode/skills/crit-story/SKILL.md",
+		"integrations/claude-code/skills/crit-story/SKILL.md",
+		"integrations/cline/skills/crit-story/SKILL.md",
+		"integrations/codex/plugin/crit/skills/crit-story/SKILL.md",
+		"integrations/codex/skills/crit-story/SKILL.md",
+		"integrations/cursor/skills/crit-story/SKILL.md",
+		"integrations/gemini/skills/crit-story/SKILL.md",
+		"integrations/github-copilot/skills/crit-story/SKILL.md",
+		"integrations/grok/skills/crit-story/SKILL.md",
+		"integrations/hermes/skills/crit-story/SKILL.md",
+		"integrations/opencode/skills/crit-story/SKILL.md",
+		"integrations/pi/skills/crit-story/SKILL.md",
+		"integrations/qwen/skills/crit-story/SKILL.md",
+		"integrations/windsurf/skills/crit-story/SKILL.md",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			raw := readIntegrationForPolicyTest(t, path)
+			for _, flag := range []string{"--guide", "--prep", "--story-file"} {
+				for _, line := range strings.Split(raw, "\n") {
+					if strings.HasPrefix(strings.TrimSpace(line), "crit story "+flag) &&
+						!strings.Contains(line, "<scope>") {
+						t.Fatalf("%s: %q omits <scope>; every crit story call resolves its own scope",
+							path, strings.TrimSpace(line))
+					}
+				}
+			}
+			content := strings.Join(strings.Fields(raw), " ")
+			if !strings.Contains(content, "Copy `scope_fingerprint` verbatim") {
+				t.Fatalf("%s does not tell the author to copy scope_fingerprint from the prep header", path)
+			}
+			omit := strings.Index(content, "Leave `version`")
+			if omit < 0 {
+				t.Fatalf("%s has no list of fields to leave out", path)
+			}
+			if strings.Contains(content[omit:], "`scope_fingerprint`") {
+				t.Fatalf("%s tells the author to omit scope_fingerprint, which disables the drift check", path)
+			}
+		})
+	}
+}
