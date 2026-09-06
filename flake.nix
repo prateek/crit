@@ -5,7 +5,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "0.19.1";
+      version = "0.20.0";
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in rec {
@@ -17,7 +17,7 @@
             inherit version;
             src = self;
             subPackages = [ "cmd/crit" ];
-            vendorHash = "sha256-1RUnAxY0WAvOxYQUGivQFvxOeXLewivjHdgnSw6Goh8=";
+            vendorHash = "sha256-iEeHP8r32ipnAV54dflLKg/XPJXjO1M3KqslRcQnhZ0=";
             # Tests run in dedicated CI jobs (test + e2e); the Nix sandbox's
             # /build TMPDIR cleanup races with the debounced review file writer.
             doCheck = false;
