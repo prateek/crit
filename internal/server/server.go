@@ -1777,11 +1777,13 @@ func (s *Server) handleFileComments(w http.ResponseWriter, r *http.Request) {
 		s.session.Load().EnsureFileEntry(path)
 
 		if req.Scope == "file" {
-			c, ok := s.session.Load().AddFileComment(path, req.Body, req.Author, s.authUserID())
+			sess := s.session.Load()
+			c, ok := sess.AddFileComment(path, req.Body, req.Author, s.authUserID())
 			if !ok {
 				http.Error(w, "File not found", http.StatusNotFound)
 				return
 			}
+			sess.Notify(SSEEvent{Type: "comments-changed"})
 			writeJSONStatus(w, http.StatusCreated, c)
 			return
 		}
@@ -1791,11 +1793,13 @@ func (s *Server) handleFileComments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		c, ok := s.session.Load().AddComment(path, req.StartLine, req.EndLine, normalizeCommentSide(req.Side), req.Body, req.Quote, req.Author, s.authUserID())
+		sess := s.session.Load()
+		c, ok := sess.AddComment(path, req.StartLine, req.EndLine, normalizeCommentSide(req.Side), req.Body, req.Quote, req.Author, s.authUserID())
 		if !ok {
 			http.Error(w, "File not found", http.StatusNotFound)
 			return
 		}
+		sess.Notify(SSEEvent{Type: "comments-changed"})
 		writeJSONStatus(w, http.StatusCreated, c)
 
 	default:
@@ -1947,6 +1951,7 @@ func (s *Server) handleFileCommentPut(w http.ResponseWriter, r *http.Request, pa
 		}
 		return
 	}
+	sess.Notify(SSEEvent{Type: "comments-changed"})
 	writeJSON(w, c)
 }
 
@@ -2143,15 +2148,29 @@ func (s *Server) handleReplyRoute(w http.ResponseWriter, r *http.Request, filePa
 }
 
 func (s *Server) handleReviewCommentReplyRoute(w http.ResponseWriter, r *http.Request, commentID, replyID string) {
+	sess := s.session.Load()
+	notify := func() { sess.Notify(SSEEvent{Type: "comments-changed"}) }
 	handleReplyCRUD(w, r, replyID, replyOps{
 		add: func(body, author string) (Reply, bool) {
-			return s.session.Load().AddReviewCommentReply(commentID, body, author, s.authUserID())
+			rep, ok := sess.AddReviewCommentReply(commentID, body, author, s.authUserID())
+			if ok {
+				notify()
+			}
+			return rep, ok
 		},
 		update: func(rid, body string) (Reply, bool) {
-			return s.session.Load().UpdateReviewCommentReply(commentID, rid, body)
+			rep, ok := sess.UpdateReviewCommentReply(commentID, rid, body)
+			if ok {
+				notify()
+			}
+			return rep, ok
 		},
 		delete: func(rid string) bool {
-			return s.session.Load().DeleteReviewCommentReply(commentID, rid)
+			ok := sess.DeleteReviewCommentReply(commentID, rid)
+			if ok {
+				notify()
+			}
+			return ok
 		},
 	})
 }
@@ -2183,11 +2202,15 @@ func (s *Server) handleReviewComments(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Comment body is required", http.StatusBadRequest)
 			return
 		}
-		c := s.session.Load().AddReviewComment(req.Body, req.Author, s.authUserID())
+		sess := s.session.Load()
+		c := sess.AddReviewComment(req.Body, req.Author, s.authUserID())
+		sess.Notify(SSEEvent{Type: "comments-changed"})
 		writeJSONStatus(w, http.StatusCreated, c)
 
 	case http.MethodDelete:
-		s.session.Load().ClearAllComments()
+		sess := s.session.Load()
+		sess.ClearAllComments()
+		sess.Notify(SSEEvent{Type: "comments-changed"})
 		writeJSON(w, map[string]string{"status": "ok"})
 
 	default:
@@ -2257,18 +2280,22 @@ func (s *Server) handleReviewCommentUpdate(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "Comment body is required", http.StatusBadRequest)
 			return
 		}
-		c, ok := s.session.Load().UpdateReviewComment(id, req.Body)
+		sess := s.session.Load()
+		c, ok := sess.UpdateReviewComment(id, req.Body)
 		if !ok {
 			http.Error(w, "Comment not found", http.StatusNotFound)
 			return
 		}
+		sess.Notify(SSEEvent{Type: "comments-changed"})
 		writeJSON(w, c)
 
 	case http.MethodDelete:
-		if !s.session.Load().DeleteReviewComment(id) {
+		sess := s.session.Load()
+		if !sess.DeleteReviewComment(id) {
 			http.Error(w, "Comment not found", http.StatusNotFound)
 			return
 		}
+		sess.Notify(SSEEvent{Type: "comments-changed"})
 		w.WriteHeader(http.StatusNoContent)
 
 	default:

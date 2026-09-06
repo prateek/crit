@@ -178,9 +178,6 @@ curl -s "http://127.0.0.1:$PORT/api/health"
 - `/api/health` reports `browser_clients`, a boolean that is true while at
   least one tab holds an `/api/events` connection. Read it as a hint: a tab
   that is loading or reconnecting reads as `false`.
-- A line or file comment you POST does not reach an open tab on its own; that
-  path emits no `comments-changed`. The daemon serving your comment and the
-  reviewer seeing it stay two different facts, so ask them to reload.
 - Reconnecting to a live daemon keeps its focus. Restarting a dead one loses it:
   a `--pr`, `--mr` or `--range` session persists no `cli_args`, so
   `crit --session <id>` comes back in working-tree focus and hides every comment
